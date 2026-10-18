@@ -1,0 +1,503 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Infrastructure Reporting System - serverless API, Cognito authentication,
+  DynamoDB, S3 images, SNS, SQS, Secrets Manager, CloudWatch and optional Amplify.
+  Uses an existing lab-provided Lambda execution role. No IAM roles or policies are created.
+
+Parameters:
+  ExistingLambdaRoleArn:
+    Type: String
+    Description: Existing lab-provided Lambda execution role ARN (must have required permissions).
+    AllowedPattern: '^arn:aws[a-zA-Z-]*:iam::[0-9]{12}:role/.+$'
+  NotificationEmail:
+    Type: String
+    Default: ''
+    Description: Optional email address for SNS notifications; subscription requires confirmation.
+  GitHubRepository:
+    Type: String
+    Default: ''
+    Description: Optional full GitHub URL containing a website/ folder with static frontend files.
+  GitHubAccessToken:
+    Type: String
+    Default: ''
+    NoEcho: true
+    Description: GitHub access token for optional Amplify deployment; do not paste it into chat.
+  GitHubBranch:
+    Type: String
+    Default: main
+    Description: Branch to deploy in Amplify if GitHubRepository and GitHubAccessToken are set.
+  ProjectName:
+    Type: String
+    Default: infrastructure-reports
+    AllowedPattern: '^[a-z][a-z0-9-]{2,30}$'
+
+Conditions:
+  HasEmail: !Not [!Equals [!Ref NotificationEmail, '']]
+  HasRepo: !Not [!Equals [!Ref GitHubRepository, '']]
+  HasToken: !Not [!Equals [!Ref GitHubAccessToken, '']]
+  EnableAmplify: !And [!Condition HasRepo, !Condition HasToken]
+
+Resources:
+  ReportsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: reportId
+          AttributeType: S
+        - AttributeName: ownerSub
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
+      KeySchema:
+        - AttributeName: reportId
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: OwnerCreatedAt
+          KeySchema:
+            - AttributeName: ownerSub
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [PUT, GET, HEAD]
+            AllowedOrigins: ['*']
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: RemoveIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  NotificationsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      DisplayName: Infrastructure Report Notifications
+
+  NotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasEmail
+    Properties:
+      TopicArn: !Ref NotificationsTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  FailureQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+
+  ApplicationSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Reserved for future third-party integrations; not required by the core API.
+      GenerateSecretString:
+        SecretStringTemplate: '{"purpose":"optional-third-party-integration"}'
+        GenerateStringKey: apiKey
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub '${ProjectName}-users'
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      MfaConfiguration: 'OFF'
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 10
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      ClientName: !Sub '${ProjectName}-web'
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders: [COGNITO]
+
+  StaffGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref UserPool
+      GroupName: Staff
+      Description: Privileged staff; assign users manually in the Cognito console.
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ProjectName}-api-${AWS::StackName}'
+      RetentionInDays: 14
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/http-api/${ProjectName}-${AWS::StackName}'
+      RetentionInDays: 14
+
+  BackendFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: BackendLogGroup
+    Properties:
+      FunctionName: !Sub '${ProjectName}-api-${AWS::StackName}'
+      Runtime: python3.12
+      Handler: index.handler
+      Timeout: 20
+      MemorySize: 256
+      Role: !Ref ExistingLambdaRoleArn
+      DeadLetterConfig:
+        TargetArn: !GetAtt FailureQueue.Arn
+      Environment:
+        Variables:
+          REPORTS_TABLE: !Ref ReportsTable
+          IMAGE_BUCKET: !Ref ImageBucket
+          SNS_TOPIC: !Ref NotificationsTopic
+      Code:
+        ZipFile: |
+          import os, json, uuid, datetime, boto3, base64
+          from boto3.dynamodb.conditions import Key
+          from botocore.exceptions import ClientError
+
+          db = boto3.resource('dynamodb').Table(os.environ['REPORTS_TABLE'])
+          s3 = boto3.client('s3')
+          sns = boto3.client('sns')
+          BUCKET = os.environ['IMAGE_BUCKET']
+          TOPIC = os.environ['SNS_TOPIC']
+
+          def reply(status, payload):
+              return {'statusCode': status, 'headers': {'content-type': 'application/json'},
+                      'body': json.dumps(payload, default=str)}
+
+          def now():
+              return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+          def identity(event):
+              jwt = event.get('requestContext', {}).get('authorizer', {}).get('jwt', {})
+              claims = jwt.get('claims', {})
+              sub = claims.get('sub')
+              groups = claims.get('cognito:groups', '')
+              if isinstance(groups, str):
+                  groups = groups.strip('[]').replace('"','').split(',') if groups else []
+              return sub, ('Staff' in [g.strip() for g in groups])
+
+          def notify(message):
+              try:
+                  sns.publish(TopicArn=TOPIC, Subject='Infrastructure report update',
+                              Message=message)
+              except ClientError as exc:
+                  print('SNS publish failed:', str(exc))
+
+          def handler(event, context):
+              route = event.get('routeKey', '')
+              path = event.get('pathParameters') or {}
+              sub, staff = identity(event)
+              if not sub:
+                  return reply(401, {'error': 'Authentication required'})
+              try:
+                  body = json.loads(event.get('body') or '{}')
+                  if not isinstance(body, dict):
+                      return reply(400, {'error': 'Expected JSON object'})
+              except (ValueError, TypeError):
+                  return reply(400, {'error': 'Invalid JSON'})
+              try:
+                  if route == 'POST /reports':
+                      category = str(body.get('category', '')).strip()[:80]
+                      description = str(body.get('description', '')).strip()[:2000]
+                      location = str(body.get('location', '')).strip()[:300]
+                      if not all([category, description, location]):
+                          return reply(400, {'error': 'category, description and location are required'})
+                      item = {'reportId': str(uuid.uuid4()), 'ownerSub': sub,
+                              'category': category, 'description': description,
+                              'location': location, 'status': 'Submitted',
+                              'createdAt': now(), 'updatedAt': now()}
+                      db.put_item(Item=item)
+                      notify('New report submitted: ' + item['reportId'] + ' (' + category + ')')
+                      return reply(201, item)
+                  if route == 'GET /reports':
+                      if staff:
+                          data = db.scan(Limit=100)
+                      else:
+                          data = db.query(IndexName='OwnerCreatedAt',
+                                          KeyConditionExpression=Key('ownerSub').eq(sub),
+                                          ScanIndexForward=False, Limit=100)
+                      return reply(200, {'items': data.get('Items', []),
+                                         'nextKey': data.get('LastEvaluatedKey')})
+                  if route == 'GET /reports/{id}':
+                      item = db.get_item(Key={'reportId': path['id']}).get('Item')
+                      if not item:
+                          return reply(404, {'error': 'Report not found'})
+                      if not staff and item['ownerSub'] != sub:
+                          return reply(403, {'error': 'Access denied'})
+                      return reply(200, item)
+                  if route == 'PATCH /reports/{id}':
+                      if not staff:
+                          return reply(403, {'error': 'Staff access required'})
+                      status = body.get('status')
+                      if status not in ['Submitted', 'Under Review', 'Assigned',
+                                        'In Progress', 'Resolved', 'Rejected']:
+                          return reply(400, {'error': 'Invalid status'})
+                      result = db.update_item(
+                          Key={'reportId': path['id']},
+                          UpdateExpression='SET #s = :s, updatedAt = :u',
+                          ConditionExpression='attribute_exists(reportId)',
+                          ExpressionAttributeNames={'#s': 'status'},
+                          ExpressionAttributeValues={':s': status, ':u': now()},
+                          ReturnValues='ALL_NEW')
+                      notify('Report ' + path['id'] + ' status updated to ' + status)
+                      return reply(200, result['Attributes'])
+                  if route == 'POST /uploads':
+                      report_id = str(body.get('reportId', ''))
+                      content_type = str(body.get('contentType', ''))
+                      if content_type not in ['image/jpeg', 'image/png', 'image/webp']:
+                          return reply(400, {'error': 'Unsupported image content type'})
+                      report = db.get_item(Key={'reportId': report_id}).get('Item')
+                      if not report:
+                          return reply(404, {'error': 'Report not found'})
+                      if not staff and report['ownerSub'] != sub:
+                          return reply(403, {'error': 'Access denied'})
+                      ext = {'image/jpeg': 'jpg', 'image/png': 'png',
+                             'image/webp': 'webp'}[content_type]
+                      key = 'reports/' + report_id + '/' + str(uuid.uuid4()) + '.' + ext
+                      url = s3.generate_presigned_url('put_object',
+                          Params={'Bucket': BUCKET, 'Key': key,
+                                  'ContentType': content_type}, ExpiresIn=300)
+                      db.update_item(Key={'reportId': report_id},
+                          UpdateExpression='SET imageKey = :k, updatedAt = :u',
+                          ExpressionAttributeValues={':k': key, ':u': now()})
+                      return reply(200, {'uploadUrl': url, 'imageKey': key,
+                                         'expiresIn': 300})
+                  return reply(404, {'error': 'Route not found'})
+              except db.meta.client.exceptions.ConditionalCheckFailedException:
+                  return reply(404, {'error': 'Report not found'})
+              except ClientError as exc:
+                  print('AWS operation failed:', str(exc))
+                  return reply(500, {'error': 'Backend AWS operation failed; check Lambda role permissions'})
+              except Exception as exc:
+                  print('Unexpected failure:', repr(exc))
+                  return reply(500, {'error': 'Internal server error'})
+
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${ProjectName}-http-api'
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins: ['*']
+        AllowHeaders: [authorization, content-type]
+        AllowMethods: [GET, POST, PATCH, OPTIONS]
+        MaxAge: 600
+
+  JwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref HttpApi
+      AuthorizerType: JWT
+      Name: CognitoJWT
+      IdentitySource: ['$request.header.Authorization']
+      JwtConfiguration:
+        Audience: [!Ref UserPoolClient]
+        Issuer: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${UserPool}'
+
+  ApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt BackendFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  CreateReportRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /reports'
+      Target: !Sub 'integrations/${ApiIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  ListReportsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /reports'
+      Target: !Sub 'integrations/${ApiIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  GetReportRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /reports/{id}'
+      Target: !Sub 'integrations/${ApiIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  UpdateReportRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'PATCH /reports/{id}'
+      Target: !Sub 'integrations/${ApiIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  UploadRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /uploads'
+      Target: !Sub 'integrations/${ApiIntegration}'
+      AuthorizationType: JWT
+      AuthorizerId: !Ref JwtAuthorizer
+
+  ApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: '$default'
+      AutoDeploy: true
+      AccessLogSettings:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","route":"$context.routeKey","status":"$context.status","responseLatency":"$context.responseLatency"}'
+
+  ApiLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref BackendFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*'
+
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Lambda errors detected in infrastructure reporting API
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref BackendFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions: [!Ref NotificationsTopic]
+
+  AmplifyApp:
+    Type: AWS::Amplify::App
+    Condition: EnableAmplify
+    Properties:
+      Name: !Sub '${ProjectName}-web'
+      Repository: !Ref GitHubRepository
+      AccessToken: !Ref GitHubAccessToken
+      Platform: WEB
+      EnvironmentVariables:
+        - Name: API_URL
+          Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+        - Name: COGNITO_USER_POOL_ID
+          Value: !Ref UserPool
+        - Name: COGNITO_CLIENT_ID
+          Value: !Ref UserPoolClient
+        - Name: AWS_REGION
+          Value: !Ref AWS::Region
+      BuildSpec: |
+        version: 1
+        frontend:
+          phases:
+            build:
+              commands:
+                - echo "Publishing static website directory"
+          artifacts:
+            baseDirectory: website
+            files:
+              - '**/*'
+          cache:
+            paths: []
+      CustomRules:
+        - Source: '</^[^.]+$|\.(?!(css|gif|ico|jpg|jpeg|js|png|txt|svg|woff|woff2)$)([^.]+$)/>'
+          Target: /index.html
+          Status: '200'
+
+  AmplifyBranch:
+    Type: AWS::Amplify::Branch
+    Condition: EnableAmplify
+    Properties:
+      AppId: !GetAtt AmplifyApp.AppId
+      BranchName: !Ref GitHubBranch
+      EnableAutoBuild: true
+      Stage: DEVELOPMENT
+
+Outputs:
+  ApiEndpoint:
+    Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}'
+  UserPoolId:
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Value: !Ref UserPoolClient
+  DynamoDBTable:
+    Value: !Ref ReportsTable
+  ImageBucketName:
+    Value: !Ref ImageBucket
+  SnsTopicArn:
+    Value: !Ref NotificationsTopic
+  FailureQueueUrl:
+    Value: !Ref FailureQueue
+  ApplicationSecretArn:
+    Value: !Ref ApplicationSecret
+  AmplifySiteUrl:
+    Value: !If
+      - EnableAmplify
+      - !Sub 'https://${GitHubBranch}.${AmplifyApp.DefaultDomain}'
+      - 'Not configured: supply GitHubRepository and GitHubAccessToken'

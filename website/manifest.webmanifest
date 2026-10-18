@@ -1,0 +1,16 @@
+{
+  "name": "CivicPulse \u2014 Infrastructure Reporting",
+  "short_name": "CivicPulse",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#08111d",
+  "theme_color": "#08111d",
+  "icons": [
+    {
+      "src": "/assets/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

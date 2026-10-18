@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#08111d"><meta name="description" content="CivicPulse — a modern infrastructure reporting and maintenance platform. Report issues, track progress and build better neighbourhoods.">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; connect-src 'self' https://*.amazonaws.com https://*.amazonaws.com.cn; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <title>CivicPulse — Make your city better</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/styles.css">
+  <script src="assets/js/config.js" defer></script>
+  <script src="assets/js/icons.js" defer></script>
+  <script src="assets/js/auth.js" defer></script>
+  <script src="assets/js/api.js" defer></script>
+  <script src="assets/js/utils.js" defer></script>
+  <script src="assets/js/content.js" defer></script>
+  <script src="assets/js/sections.js" defer></script>
+  <script src="assets/js/auth-ui.js" defer></script>
+  <script src="assets/js/reports-ui.js" defer></script>
+  <script src="assets/js/motion.js" defer></script>
+  <script src="assets/js/cinematic.js" defer></script>
+  <script src="assets/js/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <div id="intro" class="intro" aria-label="Loading CivicPulse">
+    <div class="intro-core"><div class="intro-orbit"></div><div class="intro-mark">C<span>·</span></div></div>
+    <div class="intro-kicker">INFRASTRUCTURE INTELLIGENCE // 2026</div><div class="intro-word">CIVIC<span>PULSE</span></div><div class="intro-sub">A BETTER CITY BEGINS WITH YOU</div>
+    <div class="intro-progress"><span></span></div><button class="intro-skip" id="skipIntro">Skip intro →</button>
+  </div>
+  <div class="ambient-orbs" aria-hidden="true"><span></span><span></span><span></span></div><div class="noise" aria-hidden="true"></div><div class="cursor-glow" id="cursorGlow" aria-hidden="true"></div>
+  <header class="site-header" id="header"><div class="header-inner">
+    <a href="#home" class="brand" data-nav="home" aria-label="CivicPulse home"><span class="brand-mark">C<span>·</span></span><span>CIVIC<span class="brand-accent">PULSE</span></span></a>
+    <nav class="desktop-nav" aria-label="Main navigation"><a href="#home" data-nav="home">Home</a><a href="#explore" data-nav="explore">Explore</a><a href="#report" data-nav="report">Report an issue</a><a href="#dashboard" data-nav="dashboard">My dashboard</a><a href="#about" data-nav="about">About</a><a href="#staff" data-nav="staff" hidden>Staff</a></nav>
+    <div class="header-actions"><span class="live-pill"><i></i> SYSTEM LIVE</span><button class="btn btn-ghost btn-sm" id="loginBtn">Sign in</button><button class="btn btn-primary btn-sm" id="joinBtn">Get started <span>↗</span></button><button class="icon-btn mobile-menu-btn" id="menuBtn" aria-label="Toggle menu" aria-expanded="false"><span data-icon="menu"></span></button></div>
+  </div><nav class="mobile-nav" id="mobileNav" aria-label="Mobile navigation"><a href="#home" data-nav="home">Home</a><a href="#explore" data-nav="explore">Explore</a><a href="#report" data-nav="report">Report an issue</a><a href="#dashboard" data-nav="dashboard">My dashboard</a><a href="#staff" data-nav="staff" hidden>Staff workspace</a><a href="#about" data-nav="about">About</a><a href="#staff" data-nav="staff" hidden>Staff</a></nav></header>
+  <main id="main" tabindex="-1"><div id="view"></div></main>
+  <footer class="footer"><div class="container footer-grid"><div><a href="#home" class="brand footer-brand" data-nav="home"><span class="brand-mark">C<span>·</span></span> CIVIC<span class="brand-accent">PULSE</span></a><p>Better streets. Stronger communities.<br>Infrastructure reporting, reimagined.</p><span class="footer-tag">Built with AWS serverless technology</span></div><div><strong>PLATFORM</strong><a href="#report">Report an issue</a><a href="#dashboard">Track reports</a><a href="#explore">Explore</a></div><div><strong>INFORMATION</strong><a href="#about">About the platform</a><a href="#privacy">Privacy & data</a><a href="#terms">Terms of use</a><a href="#help">Help & support</a></div><div><strong>CONNECT</strong><p>Designed for citizens and infrastructure teams.</p><span class="footer-tag">Secure account access via Amazon Cognito</span></div></div><div class="container footer-bottom"><span>© <span id="year"></span> CivicPulse. Educational demonstration project.</span><span>Cloud-Based Infrastructure Reporting & Maintenance Management System</span></div></footer>
+  <div id="modalRoot"></div><div id="toastRoot" class="toast-root" role="status" aria-live="polite"></div>
+</body></html>
